@@ -1,1 +1,0 @@
-print("Hello world to implementing GPT1")
