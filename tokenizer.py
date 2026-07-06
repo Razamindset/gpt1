@@ -1,10 +1,5 @@
 from collections import Counter
 
-# # Start by reading the file 
-# with open("input.txt", encoding="utf-8") as f:
-#     text = f.read()
-
-
 class BPETokenizer:
     def __init__(self):
         self.merges = []
@@ -17,14 +12,21 @@ class BPETokenizer:
     
     def train(self, text, num_merges=669): 
         # returns a dict of string: number
-        word_freq = Counter(text.split())
+        words = []
 
+        for i, word in enumerate(text.split()):
+            if i == 0:
+                words.append(word)
+            else:
+                words.append("_"+word)
+
+
+        word_freq = Counter(words)
         vocab = Counter()
-
         # Now we need to  convert every word into chars 
         for word, freq in word_freq.items():
             vocab[tuple(word)] = freq
-
+            
         # Example vocab at this point 
         # vocab = ( ('q', 'w', 'e', 'r', 't', 'y'): count)
 
@@ -62,7 +64,12 @@ class BPETokenizer:
 
         tokens = []
 
-        for word in text.split():
+        words = text.split()
+
+        for i, word in enumerate(words):
+            if i != 0:
+                word = "_" + word
+
             symbols = list(word)
 
             for pair in self.merges:
@@ -74,7 +81,10 @@ class BPETokenizer:
 
     def decode(self, ids):
         tokens = [self.id_to_token[i] for i in ids]
-        return "".join(tokens)
+
+        text = "".join(tokens)
+
+        return text.replace("_", " ")
 
     def _merge_pair(self, vocab: Counter, best_pair):
         new_vocab = Counter()
@@ -154,3 +164,39 @@ class BPETokenizer:
             i: token
             for token, i in self.token_to_id.items()
         }
+
+
+
+# # Start by reading the file 
+with open("input.txt", encoding="utf-8") as f:
+    text = f.read()
+
+tokenizer = BPETokenizer()
+
+print("Training...")
+tokenizer.train(text, num_merges=500)
+
+print("Training complete!")
+print()
+
+print("First 20 merges:")
+for merge in tokenizer.merges[:20]:
+    print(merge)
+
+print("\nVocabulary size:", len(tokenizer.token_to_id))
+
+print("\nFirst 20 tokens:")
+for token, idx in list(tokenizer.token_to_id.items())[:20]:
+    print(idx, repr(token))
+
+sentence = "The quick brown fox"
+
+ids = tokenizer.encode(sentence)
+
+print("\nEncoded IDs:")
+print(ids)
+
+decoded = tokenizer.decode(ids)
+
+print("\nDecoded:")
+print(repr(decoded))
