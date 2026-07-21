@@ -111,7 +111,7 @@ class BPETokenizer:
             if skip_special_tokens == True and token in self.special_tokens:
                 continue
 
-            tokens.append(self.id_to_token.get(idx, unk_token))
+            tokens.append(token)
 
         text = "".join(tokens)
 
