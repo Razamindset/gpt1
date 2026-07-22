@@ -1,33 +1,52 @@
-import torch
 import torch.nn as nn
 
-class GPTEmbedding(nn.Module):
-    def __init__(self, vocab_size,embedding_dim, context_length):
+from embedding import GPTEmbedding
+from transformer import TransformerBlock
 
+class GPT(nn.Module):
+
+    def __init__(
+        self,
+        vocab_size,
+        embedding_dim,
+        context_length,
+        num_heads,
+        num_layers,
+        dropout=0.1,
+    ):
         super().__init__()
-        
-        self.token_embedding = nn.Embedding(
-            vocab_size, 
-            embedding_dim
+        self.embedding = GPTEmbedding(
+            vocab_size,
+            embedding_dim,
+            context_length
         )
 
-        self.position_embedding = nn.Embedding(
-            context_length,
-            embedding_dim
+        self.blocks = nn.Sequential(
+            *[
+                TransformerBlock(
+                    embedding_dim,
+                    num_heads,
+                    dropout
+                )
+                for _ in range(num_layers)
+            ]
+        )
+
+        self.ln_final = nn.LayerNorm(embedding_dim)
+
+        self.lm_head = nn.Linear(
+            embedding_dim,
+            vocab_size
         )
 
     def forward(self, x):
-        batch_size, seq_len = x.shape
 
-        postions = torch.arange(
-            seq_len,
-            device=x.device
-        )
-        token_emb = self.token_embedding(x)
+        x = self.embedding(x)
 
-        pos_emb = self.position_embedding(
-            postions
-        ) 
+        x = self.blocks(x)
 
-        return token_emb + pos_emb
-    
+        x = self.ln_final(x)
+
+        logits = self.lm_head(x)
+
+        return logits
