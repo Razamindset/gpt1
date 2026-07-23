@@ -10,7 +10,10 @@ class GPTDataset(Dataset):
         return len(self.token_ids) - self.block_size
 
     def __getitem__(self, idx):
-        chunk = self.token_ids[idx: idx + self.block_size + 1]
-        x = torch.tensor(chunk[:-1], dtype=torch.long)
-        y = torch.tensor(chunk[1:], dtype=torch.long)
-        return x, y
+        x = self.token_ids[idx : idx + self.block_size]
+        y = self.token_ids[idx + 1 : idx + self.block_size + 1]
+
+        return (
+            torch.tensor(x, dtype=torch.long),
+            torch.tensor(y, dtype=torch.long)
+        )

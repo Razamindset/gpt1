@@ -1,6 +1,8 @@
 from tokenizer import BPETokenizer
 from dataset import GPTDataset
 from torch.utils.data import DataLoader
+import torch.nn.functional as F
+import torch
 from model import GPT
 from config import *
     
@@ -20,6 +22,8 @@ loader = DataLoader(dataset, batch_size=32, shuffle=True, drop_last=True)
 
 vocab_size = len(tokenizer.token_to_id)
 
+VOCAB_SIZE = vocab_size
+
 model = GPT(
     vocab_size=VOCAB_SIZE,
     embedding_dim=EMBEDDING_DIM,
@@ -28,10 +32,41 @@ model = GPT(
     num_layers=NUM_LAYERS
 )
 
-x, y = next(iter(loader))
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY
+)
 
-logits = model(x)
 
-print(x.shape)
+print("Number of token IDs:", len(ids))
+print("Dataset size:", len(dataset))
+print("Number of batches:", len(loader))
 
-print(logits.shape)
+for epoch in range(EPOCHS):
+
+    model.train()
+
+    for batch_idx, (x, y) in enumerate(loader):
+
+        logits = model(x)
+
+        vocab_size = logits.shape[-1]
+
+        logits = logits.view(-1, vocab_size)
+        y = y.view(-1)
+
+        loss = F.cross_entropy(logits, y)
+
+        optimizer.zero_grad()
+
+        loss.backward()
+
+        optimizer.step()
+
+        if batch_idx % 50 == 0:
+            print(
+                f"Epoch {epoch+1}/{EPOCHS} | "
+                f"Batch {batch_idx}/{len(loader)} | "
+                f"Loss {loss.item():.4f}"
+            )
