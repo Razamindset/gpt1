@@ -1,5 +1,13 @@
-Implementing GPT-1 from the origional paper 
+Implemented from scratch:
 
-Task done:
-1. Tokenizer writing done 
-2. dataset generator done 
+- Byte Pair Encoding (BPE) tokenizer
+- GPT dataset and DataLoader
+- Token and positional embeddings
+- Transformer decoder blocks
+- Causal masked multi-head self-attention
+- Feed-forward network (GELU)
+- Residual connections and LayerNorm
+- GPT language model
+- Cross-entropy training loop
+- AdamW optimizer
+- Autoregressive text generation
