@@ -1,5 +1,5 @@
 import torch.nn as nn
-
+import torch
 from embedding import GPTEmbedding
 from transformer import TransformerBlock
 
@@ -32,6 +32,8 @@ class GPT(nn.Module):
             ]
         )
 
+        self.context_length = context_length
+
         self.ln_final = nn.LayerNorm(embedding_dim)
 
         self.lm_head = nn.Linear(
@@ -50,3 +52,35 @@ class GPT(nn.Module):
         logits = self.lm_head(x)
 
         return logits
+
+    def generate(self, idx, max_new_tokens):
+        # idx.shape = (batch_size, current_sequence_length)
+        # [[12, 45, 83]]
+        # Batch = 1
+        # Prompt:
+        # "The king"
+
+        for _ in range(max_new_tokens):
+            idx_cond = idx[:, -self.context_length:]
+
+            logits = self(idx_cond)
+            # (batch, seq_len, vocab_size)
+
+            # Use the last token fpr prediction
+            logits = logits[:, -1, :]
+
+            probs = torch.softmax(logits, dim=-1)
+
+            # Sampling  
+            next_token = torch.multinomial(
+                probs,
+                num_samples=1
+            )
+
+            # Append this new token to the seq
+            idx = torch.cat(
+                (idx, next_token),
+                dim=1
+            )
+
+        return idx

@@ -16,9 +16,18 @@ tokenizer.load("tokenizer.json")
 
 ids = tokenizer.encode(text, add_special_tokens=True)
 
-dataset = GPTDataset(ids, block_size=128)
+dataset = GPTDataset(
+    ids,
+    block_size=CONTEXT_LENGTH,
+    stride=DATASET_STRIDE
+)
 
-loader = DataLoader(dataset, batch_size=32, shuffle=True, drop_last=True)
+loader = DataLoader(
+    dataset,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    drop_last=True
+)
 
 vocab_size = len(tokenizer.token_to_id)
 
@@ -42,12 +51,15 @@ optimizer = torch.optim.AdamW(
 print("Number of token IDs:", len(ids))
 print("Dataset size:", len(dataset))
 print("Number of batches:", len(loader))
+print("Max batches per epoch:", MAX_BATCHES_PER_EPOCH)
 
 for epoch in range(EPOCHS):
 
     model.train()
 
     for batch_idx, (x, y) in enumerate(loader):
+        if batch_idx >= MAX_BATCHES_PER_EPOCH:
+            break
 
         logits = model(x)
 
@@ -64,9 +76,38 @@ for epoch in range(EPOCHS):
 
         optimizer.step()
 
-        if batch_idx % 50 == 0:
+        if batch_idx % PRINT_EVERY == 0:
             print(
                 f"Epoch {epoch+1}/{EPOCHS} | "
-                f"Batch {batch_idx}/{len(loader)} | "
+                f"Batch {batch_idx}/{min(len(loader), MAX_BATCHES_PER_EPOCH)} | "
                 f"Loss {loss.item():.4f}"
             )
+
+model.eval()
+
+prompt = "To be"
+
+ids = tokenizer.encode(
+    prompt,
+    add_special_tokens=True
+)
+
+# convert ot respective size
+# (batch_size, sequence_length)
+ids = torch.tensor(
+    ids,
+    dtype=torch.long
+).unsqueeze(0)
+
+
+with torch.no_grad():
+    generated = model.generate(
+        ids,
+        max_new_tokens=100
+    )
+
+generated = generated.squeeze(0).tolist()
+
+text = tokenizer.decode(generated)
+
+print(text)
