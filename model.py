@@ -45,7 +45,27 @@ class GPT(nn.Module):
 
         x = self.embedding(x)
 
-        x = self.blocks(x)
+        # Do multi head attention
+        # First we need to create a mask for the attention 
+        # to prevent from attenidng ti future tokens 
+        seq_len = x.shape[1]
+                
+        mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=x.device),
+            diagonal=1
+        ).bool()
+        
+        # this creates a matrix with elments above the daignonal to be true and rest to be false 
+        # False True  True  True
+        # False False True  True
+        # False False False True
+        # False False False False
+        
+        # wherever there is true that will masked and unnattended
+        
+
+        for block in self.blocks:
+            x = block(x, mask)
 
         x = self.ln_final(x)
 
@@ -53,34 +73,35 @@ class GPT(nn.Module):
 
         return logits
 
-    def generate(self, idx, max_new_tokens):
-        # idx.shape = (batch_size, current_sequence_length)
-        # [[12, 45, 83]]
-        # Batch = 1
-        # Prompt:
-        # "The king"
+    # ! Legacy, Now using generate.py instead
+    # def generate(self, idx, max_new_tokens):
+    #     # idx.shape = (batch_size, current_sequence_length)
+    #     # [[12, 45, 83]]
+    #     # Batch = 1
+    #     # Prompt:
+    #     # "The king"
 
-        for _ in range(max_new_tokens):
-            idx_cond = idx[:, -self.context_length:]
+    #     for _ in range(max_new_tokens):
+    #         idx_cond = idx[:, -self.context_length:]
 
-            logits = self(idx_cond)
-            # (batch, seq_len, vocab_size)
+    #         logits = self(idx_cond)
+    #         # (batch, seq_len, vocab_size)
 
-            # Use the last token fpr prediction
-            logits = logits[:, -1, :]
+    #         # Use the last token fpr prediction
+    #         logits = logits[:, -1, :]
 
-            probs = torch.softmax(logits, dim=-1)
+    #         probs = torch.softmax(logits, dim=-1)
 
-            # Sampling  
-            next_token = torch.multinomial(
-                probs,
-                num_samples=1
-            )
+    #         # Sampling  
+    #         next_token = torch.multinomial(
+    #             probs,
+    #             num_samples=1
+    #         )
 
-            # Append this new token to the seq
-            idx = torch.cat(
-                (idx, next_token),
-                dim=1
-            )
+    #         # Append this new token to the seq
+    #         idx = torch.cat(
+    #             (idx, next_token),
+    #             dim=1
+    #         )
 
-        return idx
+    #     return idx

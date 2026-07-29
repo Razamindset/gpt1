@@ -41,28 +41,10 @@ class TransformerBlock(nn.Module):
             dropout
         )
 
-    def forward(self, x):
+    def forward(self, x, mask):
 
         # first of all we normalize
         x_norm = self.ln1(x)
-
-        # Do multi head attention
-        # First we need to create a mask for the attention 
-        # to prevent from attenidng ti future tokens 
-        seq_len = x.shape[1]
-        
-        mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=x.device),
-            diagonal=1
-        ).bool()
-
-        # this creates a matrix with elments above the daignonal to be true and rest to be false 
-        # False True  True  True
-        # False False True  True
-        # False False False True
-        # False False False False
-
-        # wherever there is true that will masked and unnattended
 
         atten_out, _ = self.attention(
             x_norm,
