@@ -116,11 +116,6 @@ def evaluate(model, loader):
     return total_loss / len(loader)
 
 
-best_val_loss = float("inf")
-start_epoch = 0
-global_step = 0
-
-
 for epoch in range(start_epoch, EPOCHS):
     model.train()
     running_loss = 0.0
