@@ -56,11 +56,28 @@ model = GPT(
     num_layers=NUM_LAYERS,
 ).to(device)
 
+
 optimizer = torch.optim.AdamW(
     model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
 )
 
-# warmup + cosine decay ---
+# resume from last checkpoint not just "best" so a Colab
+# disconnect never loses more than one epoch of progress ---
+resume_path = "last_model.pt" if os.path.exists("last_model.pt") else (
+    "best_model.pt" if os.path.exists("best_model.pt") else None
+)
+
+if resume_path:
+    checkpoint = torch.load(resume_path, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
+    start_epoch = checkpoint["epoch"] + 1
+    global_step = checkpoint.get("global_step", 0)
+    print(f"Resumed from {resume_path}, starting at epoch {start_epoch}")
+    
+
+# 2. now create the scheduler, telling it where to resume from
 total_steps = min(len(train_loader), MAX_BATCHES_PER_EPOCH) * EPOCHS
 
 def lr_lambda(step):
@@ -69,10 +86,14 @@ def lr_lambda(step):
     progress = (step - WARMUP_STEPS) / max(1, total_steps - WARMUP_STEPS)
     return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
 
-scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+scheduler = torch.optim.lr_scheduler.LambdaLR(
+    optimizer, lr_lambda, last_epoch=global_step - 1
+)
 
-# mixed precision ---
-scaler = torch.amp.GradScaler(enabled=USE_AMP, device = "cuda")
+
+# mixed precision 
+use_amp = USE_AMP and device.type == "cuda"
+scaler = torch.amp.GradScaler(device=device.type, enabled=use_amp)
 
 print("Number of token IDs:", len(ids))
 print("Train samples:", len(train_dataset))
@@ -99,20 +120,6 @@ best_val_loss = float("inf")
 start_epoch = 0
 global_step = 0
 
-# resume from last checkpoint not just "best" so a Colab
-# disconnect never loses more than one epoch of progress ---
-resume_path = "last_model.pt" if os.path.exists("last_model.pt") else (
-    "best_model.pt" if os.path.exists("best_model.pt") else None
-)
-
-if resume_path:
-    checkpoint = torch.load(resume_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
-    start_epoch = checkpoint["epoch"] + 1
-    global_step = checkpoint.get("global_step", 0)
-    print(f"Resumed from {resume_path}, starting at epoch {start_epoch}")
 
 for epoch in range(start_epoch, EPOCHS):
     model.train()
