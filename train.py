@@ -1,111 +1,50 @@
-from tokenizer import BPETokenizer
-from dataset import GPTDataset
-from torch.utils.data import DataLoader
-import torch.nn.functional as F
-import torch
-from model import GPT
-from config import *
-import os
+"""
+Train the GPT model. Designed to run comfortably on Colab:
+
+  - All data/tokenizer/checkpoints/logs/plots live under a Drive-backed
+    project folder (see utils.setup_dirs), so a Colab disconnect never
+    loses more than the current batch of work.
+  - Resumes automatically from the last checkpoint if one exists.
+  - Saves a loss-curve PNG after every epoch.
+
+Usage:
+    python train.py --epochs 20 --batch-size 64
+"""
+
+import argparse
 import math
+import os
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
-with open("input.txt", encoding="utf-8") as f:
-    text = f.read()
-
-tokenizer = BPETokenizer()
-tokenizer.load("tokenizer.json")
-
-ids = tokenizer.encode(text, add_special_tokens=True)
-
-split_idx = int(0.9 * len(ids))
-train_ids = ids[:split_idx]
-val_ids = ids[split_idx:]
-
-# stride now explicit instead of silently defaulting to 1
-train_dataset = GPTDataset(train_ids, block_size=CONTEXT_LENGTH, stride=DATASET_STRIDE)
-val_dataset = GPTDataset(val_ids, block_size=CONTEXT_LENGTH, stride=DATASET_STRIDE)
-
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    drop_last=True,
-    num_workers=2,       # new: keep GPU fed
-    pin_memory=True,     # new
-)
-
-val_loader = DataLoader(
-    val_dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=False,
-    drop_last=True,
-    num_workers=2,
-    pin_memory=True,
-)
-
-vocab_size = len(tokenizer.token_to_id)
-VOCAB_SIZE = vocab_size
-
-model = GPT(
-    vocab_size=VOCAB_SIZE,
-    embedding_dim=EMBEDDING_DIM,
-    context_length=CONTEXT_LENGTH,
-    num_heads=NUM_HEADS,
-    num_layers=NUM_LAYERS,
-).to(device)
+import config
+from dataset import GPTDataset
+from model import GPT
+from tokenizer import BPETokenizer
+from utils import TrainingLogger, load_checkpoint, save_checkpoint, setup_dirs
 
 
-optimizer = torch.optim.AdamW(
-    model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY
-)
-
-# resume from last checkpoint not just "best" so a Colab
-# disconnect never loses more than one epoch of progress ---
-resume_path = "last_model.pt" if os.path.exists("last_model.pt") else (
-    "best_model.pt" if os.path.exists("best_model.pt") else None
-)
-
-if resume_path:
-    checkpoint = torch.load(resume_path, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
-    start_epoch = checkpoint["epoch"] + 1
-    global_step = checkpoint.get("global_step", 0)
-    print(f"Resumed from {resume_path}, starting at epoch {start_epoch}")
-    
-
-# 2. now create the scheduler, telling it where to resume from
-total_steps = min(len(train_loader), MAX_BATCHES_PER_EPOCH) * EPOCHS
-
-def lr_lambda(step):
-    if step < WARMUP_STEPS:
-        return step / max(1, WARMUP_STEPS)
-    progress = (step - WARMUP_STEPS) / max(1, total_steps - WARMUP_STEPS)
-    return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
-
-scheduler = torch.optim.lr_scheduler.LambdaLR(
-    optimizer, lr_lambda, last_epoch=global_step - 1
-)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the gpt1 model.")
+    parser.add_argument("--project", default=config.PROJECT_NAME)
+    parser.add_argument("--data-name", default="input.txt")
+    parser.add_argument("--tokenizer-name", default="tokenizer.json")
+    parser.add_argument("--epochs", type=int, default=config.EPOCHS)
+    parser.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
+    parser.add_argument("--lr", type=float, default=config.LEARNING_RATE)
+    parser.add_argument("--max-batches-per-epoch", type=int, default=config.MAX_BATCHES_PER_EPOCH)
+    parser.add_argument("--no-resume", action="store_true", help="Ignore existing checkpoints, start fresh.")
+    parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision even on CUDA.")
+    args = parser.parse_args()
+    return args
 
 
-# mixed precision 
-use_amp = USE_AMP and device.type == "cuda"
-scaler = torch.amp.GradScaler(device=device.type, enabled=use_amp)
-
-print("Number of token IDs:", len(ids))
-print("Train samples:", len(train_dataset))
-print("Validation samples:", len(val_dataset))
-print("Train batches:", len(train_loader))
-print("Validation batches:", len(val_loader))
-print("Max batches per epoch:", MAX_BATCHES_PER_EPOCH)
-
-
-def evaluate(model, loader):
+def evaluate(model, loader, device):
     model.eval()
-    total_loss = 0
+    total_loss = 0.0
     with torch.no_grad():
         for x, y in loader:
             x, y = x.to(device), y.to(device)
@@ -113,83 +52,182 @@ def evaluate(model, loader):
             vocab_size = logits.shape[-1]
             loss = F.cross_entropy(logits.view(-1, vocab_size), y.view(-1))
             total_loss += loss.item()
-    return total_loss / len(loader)
+    return total_loss / max(1, len(loader))
 
 
-for epoch in range(start_epoch, EPOCHS):
-    model.train()
-    running_loss = 0.0
-    num_batches = 0
+def main():
+    args = parse_args()
+    dirs = setup_dirs(project_name=args.project)
 
-    for batch_idx, (x, y) in enumerate(train_loader):
-        if batch_idx >= MAX_BATCHES_PER_EPOCH:
-            break
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
 
-        x, y = x.to(device), y.to(device)
+    # --- data ---
+    data_path = os.path.join(dirs["data"], args.data_name)
+    tokenizer_path = os.path.join(dirs["checkpoints"], args.tokenizer_name)
 
-        with torch.cuda.amp.autocast(enabled=USE_AMP and device.type == "cuda"):
-            logits = model(x)
-            vocab_size = logits.shape[-1]
-            loss = F.cross_entropy(logits.view(-1, vocab_size), y.view(-1))
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"No corpus at {data_path}. Run download_dataset.py first.")
+    if not os.path.exists(tokenizer_path):
+        raise FileNotFoundError(f"No tokenizer at {tokenizer_path}. Run train_tokenizer.py first.")
 
-        optimizer.zero_grad()
-        scaler.scale(loss).backward()
+    with open(data_path, encoding="utf-8") as f:
+        text = f.read()
 
-        # gradient clipping (unscale first when using AMP)
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
+    tokenizer = BPETokenizer()
+    tokenizer.load(tokenizer_path)
 
-        scaler.step(optimizer)
-        scaler.update()
-        scheduler.step()
+    ids = tokenizer.encode(text, add_special_tokens=True)
+    split_idx = int((1 - config.VAL_SPLIT) * len(ids))
+    train_ids, val_ids = ids[:split_idx], ids[split_idx:]
 
-        running_loss += loss.item()
-        num_batches += 1
-        global_step += 1
+    train_dataset = GPTDataset(train_ids, block_size=config.CONTEXT_LENGTH, stride=config.DATASET_STRIDE)
+    val_dataset = GPTDataset(val_ids, block_size=config.CONTEXT_LENGTH, stride=config.DATASET_STRIDE)
 
-        if batch_idx % PRINT_EVERY == 0:
-            lr_now = scheduler.get_last_lr()[0]
-            print(
-                f"Epoch {epoch+1}/{EPOCHS} | "
-                f"Batch {batch_idx}/{min(len(train_loader), MAX_BATCHES_PER_EPOCH)} | "
-                f"Loss {loss.item():.4f} | LR {lr_now:.2e}"
-            )
+    common_loader_kwargs = dict(
+        num_workers=2 if device.type == "cuda" else 0,
+        pin_memory=device.type == "cuda",
+    )
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, **common_loader_kwargs)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True, **common_loader_kwargs)
 
-    train_loss = running_loss / max(1, num_batches)  # real epoch average now
-    val_loss = evaluate(model, val_loader)
+    vocab_size = len(tokenizer.token_to_id)
+    print(f"Vocab size: {vocab_size}")
+    print(f"Token IDs: {len(ids):,} | Train windows: {len(train_dataset):,} | Val windows: {len(val_dataset):,}")
+    print(f"Train batches/epoch (capped): {min(len(train_loader), args.max_batches_per_epoch)}")
 
-    print(f"\nEpoch {epoch+1}")
-    print(f"Train Loss: {train_loss:.4f}")
-    print(f"Validation Loss: {val_loss:.4f}")
+    # --- model / optimizer ---
+    model = GPT(
+        vocab_size=vocab_size,
+        embedding_dim=config.EMBEDDING_DIM,
+        context_length=config.CONTEXT_LENGTH,
+        num_heads=config.NUM_HEADS,
+        num_layers=config.NUM_LAYERS,
+        dropout=config.DROPOUT,
+    ).to(device)
 
-    # always save "last" so you can resume after a disconnect ---
-    if SAVE_EVERY_EPOCH:
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "best_val_loss": best_val_loss,
-                "global_step": global_step,
-            },
-            "last_model.pt",
-        )
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {num_params:,}")
 
-    if val_loss < best_val_loss:
-        best_val_loss = val_loss
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
-                "val_loss": val_loss,
-                "best_val_loss": best_val_loss,
-                "global_step": global_step,
-            },
-            "best_model.pt",
-        )
-        print("Best model saved")
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=config.WEIGHT_DECAY)
 
-print("Saving final model")
-torch.save(model.state_dict(), "final_model.pt")
+    # --- resume (fixed: these are always defined now, even with no checkpoint) ---
+    best_val_loss = float("inf")
+    start_epoch = 0
+    global_step = 0
+
+    last_ckpt_path = os.path.join(dirs["checkpoints"], "last_model.pt")
+    best_ckpt_path = os.path.join(dirs["checkpoints"], "best_model.pt")
+
+    resume_path = None
+    if not args.no_resume:
+        if os.path.exists(last_ckpt_path):
+            resume_path = last_ckpt_path
+        elif os.path.exists(best_ckpt_path):
+            resume_path = best_ckpt_path
+
+    if resume_path:
+        checkpoint = load_checkpoint(resume_path, device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        best_val_loss = checkpoint.get("best_val_loss", checkpoint.get("val_loss", float("inf")))
+        start_epoch = checkpoint["epoch"] + 1
+        global_step = checkpoint.get("global_step", 0)
+        print(f"Resumed from {resume_path} at epoch {start_epoch}, step {global_step}")
+    else:
+        print("Starting a fresh run (no checkpoint found).")
+
+    if start_epoch >= args.epochs:
+        print(f"Checkpoint is already at epoch {start_epoch} >= --epochs {args.epochs}. Nothing to do.")
+        return
+
+    # --- LR schedule (warmup + cosine decay), resume-aware ---
+    steps_per_epoch = min(len(train_loader), args.max_batches_per_epoch)
+    total_steps = steps_per_epoch * args.epochs
+
+    def lr_lambda(step):
+        if step < config.WARMUP_STEPS:
+            return step / max(1, config.WARMUP_STEPS)
+        progress = (step - config.WARMUP_STEPS) / max(1, total_steps - config.WARMUP_STEPS)
+        return 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda, last_epoch=global_step - 1)
+
+    # --- mixed precision (fixed: single modern torch.amp API, no deprecated calls) ---
+    use_amp = config.USE_AMP and not args.no_amp and device.type == "cuda"
+    scaler = torch.amp.GradScaler(device=device.type, enabled=use_amp)
+
+    logger = TrainingLogger(dirs["logs"], dirs["plots"], resume=(resume_path is not None))
+
+    config_snapshot = {
+        "vocab_size": vocab_size,
+        "embedding_dim": config.EMBEDDING_DIM,
+        "context_length": config.CONTEXT_LENGTH,
+        "num_heads": config.NUM_HEADS,
+        "num_layers": config.NUM_LAYERS,
+        "dropout": config.DROPOUT,
+    }
+
+    # --- training loop ---
+    for epoch in range(start_epoch, args.epochs):
+        model.train()
+        running_loss = 0.0
+        num_batches = 0
+
+        pbar = tqdm(train_loader, total=steps_per_epoch, desc=f"Epoch {epoch + 1}/{args.epochs}")
+        for batch_idx, (x, y) in enumerate(pbar):
+            if batch_idx >= args.max_batches_per_epoch:
+                break
+
+            x, y = x.to(device), y.to(device)
+
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
+                logits = model(x)
+                vocab_size_ = logits.shape[-1]
+                loss = F.cross_entropy(logits.view(-1, vocab_size_), y.view(-1))
+
+            optimizer.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), config.GRAD_CLIP)
+
+            scaler.step(optimizer)
+            scaler.update()
+            scheduler.step()
+
+            loss_value = loss.item()
+            running_loss += loss_value
+            num_batches += 1
+            global_step += 1
+
+            if batch_idx % config.PRINT_EVERY == 0:
+                logger.log_step(global_step, loss_value)
+
+            pbar.set_postfix(loss=f"{loss_value:.4f}", lr=f"{scheduler.get_last_lr()[0]:.2e}")
+
+        train_loss = running_loss / max(1, num_batches)
+        val_loss = evaluate(model, val_loader, device)
+        lr_now = scheduler.get_last_lr()[0]
+
+        print(f"\nEpoch {epoch + 1}: train_loss={train_loss:.4f}  val_loss={val_loss:.4f}  lr={lr_now:.2e}")
+
+        logger.log_epoch(epoch + 1, train_loss, val_loss, lr_now)
+        plot_path = logger.plot()
+        print(f"Loss curve updated: {plot_path}")
+
+        if config.SAVE_EVERY_EPOCH:
+            save_checkpoint(last_ckpt_path, model, optimizer, epoch, global_step, val_loss, best_val_loss, config_snapshot)
+
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            save_checkpoint(best_ckpt_path, model, optimizer, epoch, global_step, val_loss, best_val_loss, config_snapshot)
+            print("New best model saved.")
+
+    final_path = os.path.join(dirs["checkpoints"], "final_model.pt")
+    torch.save(model.state_dict(), final_path)
+    print(f"\nTraining complete. Final model saved to {final_path}")
+
+
+if __name__ == "__main__":
+    main()

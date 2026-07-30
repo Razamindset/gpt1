@@ -39,8 +39,14 @@ class BPETokenizer:
         # Example vocab at this point 
         # vocab = ( ('q', 'w', 'e', 'r', 't', 'y'): count)
 
-        # Start the training here 
-        for _ in range(num_merges):
+        # Start the training here
+        try:
+            from tqdm.auto import tqdm
+            merge_range = tqdm(range(num_merges), desc="BPE merges")
+        except ImportError:
+            merge_range = range(num_merges)
+
+        for _ in merge_range:
             # Generates pairs and counts them
             pairs = self._get_pair_frequencies(vocab)
 
