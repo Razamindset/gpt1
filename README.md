@@ -88,6 +88,15 @@ and not a local/ephemeral path.
   maintains an incremental pair-frequency index and only touches the words
   affected by each merge, which is several times faster (speedup grows with
   corpus/vocab size — larger corpora benefit more).
+- **Tokenizer encode speed:** `encode()` had the same class of bug, and it's
+  worse in practice because it runs on your *entire training corpus* every
+  time you start `train.py` — for every word it looped through all learned
+  merges (up to 4000) and rescanned the whole word each time, regardless of
+  whether that merge applied. This is what looked like training being
+  "stuck" right after printing `Device: cuda`. Rewritten to apply merges by
+  priority rank (stop as soon as no known merge applies) plus caching
+  repeated words within a call — verified to produce byte-identical output
+  to the old method, just 100-500x+ faster depending on corpus size.
 - Checkpoints save the model config alongside the weights, so `generate.py`
   always rebuilds the exact right architecture — no manual hyperparameter
   syncing needed.

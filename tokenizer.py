@@ -10,6 +10,7 @@ class BPETokenizer:
         self.vocab = Counter()
 
         self.trained = False
+        self._merge_ranks = None
 
         self.special_tokens = [
             "<pad>",
@@ -106,6 +107,7 @@ class BPETokenizer:
         # We learnt some merges in the loop
         # now we want to use them
         # Apply the merges over the words freq and save unique tokens
+        self._build_merge_ranks()
         self._build_vocab(word_freq)
         self.vocab = Counter(vocab)
         self.trained = True
@@ -117,29 +119,32 @@ class BPETokenizer:
         if not self.trained:
             raise RuntimeError("Tokenizer has not been trained.")
 
+        if getattr(self, "_merge_ranks", None) is None:
+            self._build_merge_ranks()
+
         tokens = []
 
         if add_special_tokens:
             tokens.append(self.token_to_id['<bos>'])
 
         words = text.split()
+        unk_id = self.token_to_id['<unk>']
+
+        # Real text repeats the same words constantly ("the", "and", ...).
+        # Cache each unique word's token ids so we only run BPE merges on it
+        # once per encode() call, instead of once per occurrence.
+        word_cache = {}
 
         for i, word in enumerate(words):
-            if i != 0:
-                word = "_" + word
+            lookup_word = word if i == 0 else "_" + word
 
-            symbols = list(word)
+            cached_ids = word_cache.get(lookup_word)
+            if cached_ids is None:
+                symbols = self._apply_merges(list(lookup_word))
+                cached_ids = [self.token_to_id.get(symbol, unk_id) for symbol in symbols]
+                word_cache[lookup_word] = cached_ids
 
-            for pair in self.merges:
-                symbols = self._merge_symbols(symbols, pair)
-            
-            # Handle if there is some unknown token
-            unk_id  = self.token_to_id['<unk>']
-
-            tokens.extend(
-                self.token_to_id.get(symbol, unk_id)
-                for symbol in symbols
-            )
+            tokens.extend(cached_ids)
         
         if add_special_tokens:
             tokens.append(self.token_to_id['<eos>'])
@@ -183,16 +188,42 @@ class BPETokenizer:
 
         return merged
 
+    def _apply_merges(self, symbols):
+        # Repeatedly merge the adjacent pair with the lowest rank (i.e. the
+        # pair that was LEARNED EARLIEST during training) until no known
+        # merge applies. This gives the identical result to "apply every
+        # learned merge to the whole word, in order" (what this tokenizer
+        # used to do), but only does work proportional to the word's own
+        # length instead of the total number of merges (up to 4000) --
+        # that mismatch is what made encode() painfully slow on real text.
+        if len(symbols) < 2:
+            return symbols
+
+        while True:
+            best_rank = None
+            best_idx = None
+
+            for i in range(len(symbols) - 1):
+                rank = self._merge_ranks.get((symbols[i], symbols[i + 1]))
+                if rank is not None and (best_rank is None or rank < best_rank):
+                    best_rank = rank
+                    best_idx = i
+
+            if best_idx is None:
+                break
+
+            symbols = symbols[:best_idx] + [symbols[best_idx] + symbols[best_idx + 1]] + symbols[best_idx + 2:]
+
+        return symbols
+
+    def _build_merge_ranks(self):
+        self._merge_ranks = {pair: rank for rank, pair in enumerate(self.merges)}
+
     def _build_vocab(self, word_freq):
         tokens = set()
-        
+
         for word in word_freq:
-            symbols = list(word)
-
-            for pair in self.merges:
-                # Get new symbols if anyt merged 
-                symbols = self._merge_symbols(symbols, pair)
-
+            symbols = self._apply_merges(list(word))
             tokens.update(symbols)
 
         self.token_to_id = {}
@@ -242,6 +273,7 @@ class BPETokenizer:
             for token, idx in self.token_to_id.items()
         }
 
+        self._build_merge_ranks()
         self.trained = True 
 
 # # Start by reading the file 
