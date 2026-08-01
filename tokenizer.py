@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 
 class BPETokenizer:
@@ -31,15 +31,27 @@ class BPETokenizer:
 
 
         word_freq = Counter(words)
-        vocab = Counter()
-        # Now we need to  convert every word into chars 
-        for word, freq in word_freq.items():
-            vocab[tuple(word)] = freq
-            
-        # Example vocab at this point 
-        # vocab = ( ('q', 'w', 'e', 'r', 't', 'y'): count)
+        # vocab: word-as-tuple-of-symbols -> frequency
+        vocab = {tuple(word): freq for word, freq in word_freq.items()}
 
-        # Start the training here
+        # Example vocab at this point 
+        # vocab = { ('q', 'w', 'e', 'r', 't', 'y'): count }
+
+        # --- Incremental pair-frequency index ---
+        # The naive approach recomputes pair counts over the ENTIRE vocab on
+        # every merge (O(num_merges * vocab_size)), which is what made this
+        # slow on real corpora. Instead we keep running pair counts and, for
+        # each merge, only touch the (typically small) set of words that
+        # actually contain the pair being merged.
+        pair_freq = Counter()
+        pair_to_words = defaultdict(set)
+
+        for word, freq in vocab.items():
+            for i in range(len(word) - 1):
+                pair = (word[i], word[i + 1])
+                pair_freq[pair] += freq
+                pair_to_words[pair].add(word)
+
         try:
             from tqdm.auto import tqdm
             merge_range = tqdm(range(num_merges), desc="BPE merges")
@@ -47,27 +59,55 @@ class BPETokenizer:
             merge_range = range(num_merges)
 
         for _ in merge_range:
-            # Generates pairs and counts them
-            pairs = self._get_pair_frequencies(vocab)
-
-            if not pairs:
+            if not pair_freq:
                 break
-            
-            # Now sort for the most occuring pair 
-            best_pair = max(pairs, key=pairs.get)
+
+            best_pair = max(pair_freq, key=pair_freq.get)
+            if pair_freq[best_pair] <= 0:
+                break
 
             self.merges.append(best_pair)
 
-            # Update the vocab using the newly learn merge
-            # this merge is used to keep learning new merges not for building final tokens
-            vocab = self._merge_pair(vocab, best_pair)
-        
+            # Only the words that contain best_pair need updating.
+            affected_words = list(pair_to_words.get(best_pair, ()))
+
+            for old_word in affected_words:
+                freq = vocab.get(old_word)
+                if freq is None:
+                    continue
+
+                # Remove this word's contribution to every pair it forms.
+                for i in range(len(old_word) - 1):
+                    p = (old_word[i], old_word[i + 1])
+                    pair_freq[p] -= freq
+                    if pair_freq[p] <= 0:
+                        del pair_freq[p]
+                    bucket = pair_to_words.get(p)
+                    if bucket is not None:
+                        bucket.discard(old_word)
+                        if not bucket:
+                            del pair_to_words[p]
+
+                new_word = tuple(self._merge_symbols(list(old_word), best_pair))
+
+                del vocab[old_word]
+                vocab[new_word] = vocab.get(new_word, 0) + freq
+
+                # Add the merged word's contribution to every pair it forms.
+                for i in range(len(new_word) - 1):
+                    p = (new_word[i], new_word[i + 1])
+                    pair_freq[p] += freq
+                    pair_to_words[p].add(new_word)
+
+            pair_freq.pop(best_pair, None)
+            pair_to_words.pop(best_pair, None)
+
         # Training is finished
         # We learnt some merges in the loop
         # now we want to use them
         # Apply the merges over the words freq and save unique tokens
         self._build_vocab(word_freq)
-        self.vocab = vocab
+        self.vocab = Counter(vocab)
         self.trained = True
 
     def encode(self, text, add_special_tokens=True):
@@ -123,33 +163,6 @@ class BPETokenizer:
 
         return text.replace("_", " ")
 
-    def _merge_pair(self, vocab: Counter, best_pair):
-        new_vocab = Counter()
-
-        # Loop over all words
-        for word, freq in vocab.items():
-            # Now go over the single word and see if any merges available 
-            new_word = []
-
-            i=0
-
-            while i < len(word):
-                if(
-                    i< len(word) -1 
-                    and word[i] == best_pair[0]
-                    and word[i+1] == best_pair[1]
-                   ):
-                    new_word.append(word[i] + word[i+1])
-                    i+=2
-                else:
-                    new_word.append(word[i])
-                    i+=1
-            
-            new_vocab[tuple(new_word)] += freq
-
-        return new_vocab 
-    
-
     def _merge_symbols(self, symbols, pair):
         # we get a list of symbols for a word and a possible merge  
         # if we can make a similar pair from the list of availble items we merge it and make new symbols
@@ -169,16 +182,6 @@ class BPETokenizer:
                 i += 1
 
         return merged
-
-    def _get_pair_frequencies(self, vocab: Counter):
-        pairs_freq = Counter()
-
-        for word, freq in vocab.items():
-            for i in range(len(word) - 1):
-                pair = (word[i], word[i+1])
-                pairs_freq[pair] += freq
-
-        return pairs_freq
 
     def _build_vocab(self, word_freq):
         tokens = set()

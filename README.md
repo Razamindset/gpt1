@@ -38,11 +38,22 @@ python train.py --epochs 20 --batch-size 64
 
 # 4. Generate text
 python generate.py --prompt "Once upon a time" --checkpoint best
+
+# 5. Generate a batch of sample completions across a few prompts/temperatures
+python generate_samples.py --checkpoint best
 ```
+
+By default `train.py` now trains on **every batch in the dataset each epoch**
+(`MAX_BATCHES_PER_EPOCH = None` in `config.py`) for `EPOCHS = 40`. Pass
+`--max-batches-per-epoch N` to `train.py` if you want to cap it again.
 
 By default everything is written under `./runs/gpt1/` (`data/`,
 `checkpoints/`, `logs/`, `plots/`). Pass `--project my_experiment` to any
 script to keep separate runs side by side.
+
+Every script prints `[gpt1] Run directory: ...` on startup — check that
+line to confirm you're actually writing to Drive (`/content/drive/MyDrive/...`)
+and not a local/ephemeral path.
 
 ## Project layout
 
@@ -59,10 +70,24 @@ script to keep separate runs side by side.
 | `model.py` | Full GPT model (stacked decoder blocks + LM head) |
 | `train.py` | Training loop: AMP, warmup+cosine LR, grad clipping, checkpointing/resume, plots |
 | `generate.py` | Top-k sampling text generation from a checkpoint |
+| `generate_samples.py` | Generates a batch of samples across prompts/temperatures, saves to `logs/samples.txt` |
 | `notebooks/Train_on_Colab.ipynb` | End-to-end Colab pipeline |
 
 ## Notes
 
+- **Drive persistence fix:** scripts run via `!python train.py` in Colab spawn a
+  fresh subprocess, so detecting Colab via already-imported modules doesn't
+  work there. `utils.is_colab()` now checks Colab's environment variables and
+  package availability instead, so every script correctly finds and writes to
+  `/content/drive/MyDrive/...` even when launched with `!python`. Every script
+  prints its resolved run directory on startup so you can verify this at a
+  glance.
+- **Tokenizer training speed:** `train_tokenizer.py` used to rescan the entire
+  vocabulary on every single BPE merge — with 4000 merges over a few million
+  characters that meant redoing a full pass thousands of times. It now
+  maintains an incremental pair-frequency index and only touches the words
+  affected by each merge, which is several times faster (speedup grows with
+  corpus/vocab size — larger corpora benefit more).
 - Checkpoints save the model config alongside the weights, so `generate.py`
   always rebuilds the exact right architecture — no manual hyperparameter
   syncing needed.

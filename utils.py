@@ -11,6 +11,7 @@ generate.py:
 """
 
 import csv
+import importlib.util
 import os
 import sys
 
@@ -22,8 +23,22 @@ import torch
 # --------------------------------------------------------------------------
 
 def is_colab():
-    """True when running inside a Google Colab runtime."""
-    return "google.colab" in sys.modules
+    """
+    True when running inside a Google Colab runtime.
+
+    Scripts are launched with `!python train.py` etc, which spawns a brand
+    new process -- so we can't rely on sys.modules (that only reflects
+    imports already done in the *current* process, e.g. the notebook kernel
+    that ran `from google.colab import drive`, not this subprocess).
+
+    Instead check things that are true for every process on a Colab VM:
+    the COLAB_* environment variables set at the OS level, and whether the
+    google.colab package is installed at all (it always is on Colab, and
+    essentially never is elsewhere).
+    """
+    if "COLAB_RELEASE_TAG" in os.environ or "COLAB_GPU" in os.environ:
+        return True
+    return importlib.util.find_spec("google.colab") is not None
 
 
 def mount_drive(drive_root="/content/drive"):
@@ -35,10 +50,11 @@ def mount_drive(drive_root="/content/drive"):
 
     if not os.path.ismount(drive_root):
         drive.mount(drive_root)
+    print(f"[gpt1] Google Drive mounted at {drive_root}")
     return True
 
 
-def setup_dirs(project_name="gpt1", drive_root="/content/drive/MyDrive", base_dir=None):
+def setup_dirs(project_name="gpt1", drive_root="/content/drive/MyDrive", base_dir=None, verbose=True):
     """
     Returns a dict with the folders every script should read/write to:
         data, checkpoints, logs, plots
@@ -53,6 +69,9 @@ def setup_dirs(project_name="gpt1", drive_root="/content/drive/MyDrive", base_di
         base = os.path.join(drive_root, project_name)
     else:
         base = os.path.join("runs", project_name)
+
+    if verbose:
+        print(f"[gpt1] Run directory: {os.path.abspath(base)}")
 
     dirs = {
         "base": base,

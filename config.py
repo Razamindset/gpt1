@@ -26,12 +26,12 @@ VAL_SPLIT = 0.1
 # --- Optimization ---
 BATCH_SIZE = 64
 LEARNING_RATE = 3e-4
-EPOCHS = 20
+EPOCHS = 40
 WEIGHT_DECAY = 1e-2
 WARMUP_STEPS = 200
 GRAD_CLIP = 1.0
-MAX_BATCHES_PER_EPOCH = 1000   # cap so an epoch is a bounded amount of work
-USE_AMP = True                 # mixed precision on CUDA
+MAX_BATCHES_PER_EPOCH = None    # None = use every batch in the dataset each epoch
+USE_AMP = True                   # mixed precision on CUDA
 
 # --- Logging / checkpointing ---
 PRINT_EVERY = 25

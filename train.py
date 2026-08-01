@@ -35,7 +35,8 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=config.EPOCHS)
     parser.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=config.LEARNING_RATE)
-    parser.add_argument("--max-batches-per-epoch", type=int, default=config.MAX_BATCHES_PER_EPOCH)
+    parser.add_argument("--max-batches-per-epoch", type=int, default=config.MAX_BATCHES_PER_EPOCH,
+                         help="Cap on batches per epoch. Omit, or pass 0, to train on the full dataset each epoch (default).")
     parser.add_argument("--no-resume", action="store_true", help="Ignore existing checkpoints, start fresh.")
     parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision even on CUDA.")
     args = parser.parse_args()
@@ -94,7 +95,15 @@ def main():
     vocab_size = len(tokenizer.token_to_id)
     print(f"Vocab size: {vocab_size}")
     print(f"Token IDs: {len(ids):,} | Train windows: {len(train_dataset):,} | Val windows: {len(val_dataset):,}")
-    print(f"Train batches/epoch (capped): {min(len(train_loader), args.max_batches_per_epoch)}")
+
+    max_batches = args.max_batches_per_epoch
+    if max_batches is not None and max_batches <= 0:
+        max_batches = None
+    steps_per_epoch = len(train_loader) if max_batches is None else min(len(train_loader), max_batches)
+    if max_batches is None:
+        print(f"Train batches/epoch: {steps_per_epoch} (full dataset, no cap)")
+    else:
+        print(f"Train batches/epoch: {steps_per_epoch} (capped at {max_batches})")
 
     # --- model / optimizer ---
     model = GPT(
@@ -142,7 +151,6 @@ def main():
         return
 
     # --- LR schedule (warmup + cosine decay), resume-aware ---
-    steps_per_epoch = min(len(train_loader), args.max_batches_per_epoch)
     total_steps = steps_per_epoch * args.epochs
 
     def lr_lambda(step):
@@ -176,7 +184,7 @@ def main():
 
         pbar = tqdm(train_loader, total=steps_per_epoch, desc=f"Epoch {epoch + 1}/{args.epochs}")
         for batch_idx, (x, y) in enumerate(pbar):
-            if batch_idx >= args.max_batches_per_epoch:
+            if max_batches is not None and batch_idx >= max_batches:
                 break
 
             x, y = x.to(device), y.to(device)
